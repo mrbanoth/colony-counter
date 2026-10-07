@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Colony Counter</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --blue:#2563eb; --blue2:#3b82f6; --ink:#1e293b; --ink2:#64748b; --line:#e2e8f0; --bg:#f1f5f9;
+          --ok:#10b981; --warn:#d97706; --bad:#dc2626; --small:#10b981; --big:#f59e0b; --manual:#ef4444; }
+  * { box-sizing:border-box; font-family:"Segoe UI",Roboto,sans-serif; }
+  body { margin:0; background:var(--bg); color:var(--ink); height:100vh; display:flex; overflow:hidden; }
+  aside { width:300px; background:#fff; border-right:1px solid var(--line); padding:20px; overflow-y:auto; }
+  #right { flex:1; display:flex; min-width:0; }
+  main { flex:1; display:flex; flex-direction:column; padding:16px; min-width:0; }
+  #results { width:320px; background:#fff; border-left:1px solid var(--line); padding:20px; overflow-y:auto; }
+  @media (max-width:1250px) {
+    aside { width:260px; }
+    #right { flex-direction:column; overflow-y:auto; }
+    main { flex:none; height:80vh; }
+    #results { width:auto; border-left:none; border-top:1px solid var(--line); overflow:visible; }
+  }
+  @media (max-width:700px) {
+    body { flex-direction:column; height:auto; overflow:auto; }
+    aside { width:auto; border-right:none; }
+    #right { overflow:visible; }
+    main { height:70vh; padding:8px; }
+  }
+  h1 { font-size:22px; margin:0; }
+  .sub { color:var(--ink2); font-size:13px; margin:4px 0 16px; }
+  h3 { font-size:12px; letter-spacing:1px; color:var(--ink2); margin:18px 0 8px; text-transform:uppercase; }
+  #drop { border:2px dashed #cbd5e1; border-radius:10px; padding:26px 10px; text-align:center; cursor:pointer;
+          color:var(--ink2); background:#f8fafc; }
+  #drop.over, #drop:hover { border-color:var(--blue2); background:#eff6ff; }
+  #fname { font-size:12px; color:var(--ink2); margin-top:6px; word-break:break-all; }
+  button { background:#fff; border:1px solid #cbd5e1; border-radius:8px; padding:7px 12px; cursor:pointer; font-size:14px; }
+  button:hover:not(:disabled) { border-color:var(--blue2); background:#f8fafc; }
+  button:disabled { color:#cbd5e1; cursor:default; }
+  button.on { background:#eff6ff; border-color:var(--blue); color:var(--blue); }
+  .primary { background:var(--blue); color:#fff; border:none; width:100%; padding:12px; font-weight:700;
+             letter-spacing:.5px; margin-top:14px; }
+  .primary:hover:not(:disabled) { background:var(--blue2); }
+  .primary:disabled { background:#bfdbfe; color:#fff; }
+  .row { display:flex; justify-content:space-between; align-items:center; margin:8px 0; font-size:14px; }
+  .row select, .row input[type=number] { width:110px; padding:5px; border:1px solid #cbd5e1; border-radius:6px; }
+  input[type=range] { width:100%; }
+  .help { font-size:12px; color:var(--ink2); }
+  #stage { flex:1; position:relative; background:#fff; border-radius:10px; overflow:hidden; border:1px solid var(--line); }
+  canvas { position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; touch-action:none; }
+  #empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center;
+           color:var(--ink2); font-size:16px; line-height:2; pointer-events:none; padding:20px; }
+  #busy { position:absolute; inset:0; background:rgba(255,255,255,.85); display:none; align-items:center;
+          justify-content:center; flex-direction:column; gap:14px; font-size:16px; }
+  .spin { width:46px; height:46px; border:5px solid #dbeafe; border-top-color:var(--blue); border-radius:50%;
+          animation:r 0.8s linear infinite; }
+  @keyframes r { to { transform:rotate(360deg); } }
+  .toolbar { display:flex; gap:8px; align-items:center; margin-top:10px; font-size:13px; color:var(--ink2); flex-wrap:wrap; }
+  .toolbar .grow { flex:1; text-align:right; }
+  #total { font-size:44px; font-weight:800; color:var(--blue); line-height:1; }
+  #status { font-weight:600; margin:6px 0 12px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td { padding:4px 2px; } td:last-child { text-align:right; font-weight:700; }
+  .dot { display:inline-block; width:11px; height:11px; border-radius:50%; margin-right:6px; }
+  .kv { font-size:14px; line-height:1.8; }
+  .note { font-size:12px; color:var(--ink2); background:#f8fafc; border-radius:8px; padding:10px; margin-top:12px; }
+  #error { color:var(--bad); font-size:13px; margin-top:8px; }
+  #ready { font-size:12px; margin-top:8px; color:var(--ink2); }
+  .full { width:100%; margin-top:8px; }
+</style>
+</head>
+<body>
+<aside>
+  <h1>Colony Counter</h1>
+  <div class="sub">Counts every colony on a Petri dish photo, from pin-point to plate-sized.</div>
+
+  <h3>1 · Photo</h3>
+  <div id="drop">Drop a plate photo here<br><small>or click to browse</small></div>
+  <input id="file" type="file" accept="image/*" hidden>
+  <div id="fname"></div>
+  <button class="primary" id="go" disabled>COUNT COLONIES</button>
+  <div id="ready">Starting the AI…</div>
+  <div id="error"></div>
+
+  <h3>2 · Fine-tune</h3>
+  <div class="row"><span>Sensitivity</span><b id="sensv">default</b></div>
+  <input type="range" id="sens" min="-100" max="100" value="0">
+  <div class="help">Left = only colonies the AI is sure about. Right = also doubtful ones.</div>
+  <div class="row"><label><input type="checkbox" id="useplate"> Only count inside the plate rim</label></div>
+
+  <h3>3 · Sample (optional)</h3>
+  <div class="row"><span>Plate diameter</span><select id="diam">
+    <option>55</option><option>60</option><option selected>90</option><option>100</option><option>150</option></select></div>
+  <div class="row"><span>Dilution</span><select id="dil"></select></div>
+  <div class="row"><span>Plated volume (ml)</span><input type="number" id="vol" value="0.1" min="0.001" step="0.05"></div>
+</aside>
+
+<div id="right">
+<main>
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div id="empty"><div>① Drop a photo of a plate on the left<br>② Check the circles<br>
+      ③ Fix mistakes: click a circle to remove it, click empty agar to add a colony,<br>
+      or choose <b>Draw big colony</b> and drag over a large one</div></div>
+    <div id="busy"><div class="spin"></div><div id="busytext">Counting colonies…</div></div>
+  </div>
+  <div class="toolbar">
+    <button id="drawbtn" disabled title="Drag from the centre of a colony to its edge (or hold Shift while dragging)">◯ Draw big colony</button>
+    <button id="undo" disabled>↶ Undo</button>
+    <button id="reset" disabled>Reset my edits</button>
+    <button id="fit" disabled>Fit</button>
+    <label><input type="checkbox" id="nums" checked> Numbers</label>
+    <span class="grow">Wheel: zoom · Drag: move · Click circle: remove · Click agar: add</span>
+  </div>
+</main>
+
+<section id="results">
+  <h3 style="margin-top:0">Result</h3>
+  <div id="total">—</div>
+  <div id="status" class="help">Drop a photo to count its colonies.</div>
+  <table id="kinds"></table>
+  <div class="kv" id="kv"></div>
+  <button id="csv" class="full" disabled>⤓ Export CSV</button>
+  <button id="png" class="full" disabled>⤓ Save annotated image</button>
+  <button id="json" class="full" disabled title="Boxes in the training-data format: corrected photos can be added to the next training round">⤓ Export corrected labels (JSON)</button>
+  <div class="note">Always check the circles before using a count. A plate count is statistically reliable between
+    30 and 300 colonies.</div>
+</section>
+</div>
+
+<script>
+const COLOURS = {tile:"#10b981", global:"#f59e0b", manual:"#ef4444"};
+const KIND_NAMES = {tile:"Colonies", global:"Large colonies", manual:"Added by hand"};
+const $ = id => document.getElementById(id);
+const cv = $("cv"), ctx = cv.getContext("2d");
+let file = null, fileName = "", img = null, data = null, removed = new Set(), added = [], history = [];
+let view = {s:1, x:0, y:0}, pointer = null, drawTool = false, ready = false;
+
+for (let k = 0; k <= 8; k++) $("dil").add(new Option(k ? `10^-${k}` : "none (1)", k));
+
+// ---------- model status ----------
+async function poll() {
+  try {
+    const j = await (await fetch("/health")).json();
+    ready = j.ready;
+    $("ready").textContent = j.error ? "AI failed to start: " + j.error : ready ? "AI ready ✓" : "Starting the AI…";
+    $("go").disabled = !(ready && file);
+    if (ready && file && !data) analyse();
+  } catch (e) { $("ready").textContent = "Server not reachable, retrying…"; }
+  if (!ready) setTimeout(poll, 2000);
+}
+poll();
+
+// ---------- loading a photo ----------
+$("drop").onclick = () => $("file").click();
+$("file").onchange = e => e.target.files[0] && setFile(e.target.files[0]);
+["dragover","dragenter"].forEach(ev => $("drop").addEventListener(ev, e => { e.preventDefault(); $("drop").classList.add("over"); }));
+["dragleave","drop"].forEach(ev => $("drop").addEventListener(ev, e => { e.preventDefault(); $("drop").classList.remove("over"); }));
+document.body.addEventListener("dragover", e => e.preventDefault());
+document.body.addEventListener("drop", e => { e.preventDefault(); e.dataTransfer.files[0] && setFile(e.dataTransfer.files[0]); });
+
+function setFile(f) {
+  file = f; fileName = f.name || "photo.jpg"; data = null; removed = new Set(); added = []; history = [];
+  $("fname").textContent = "📄 " + fileName; $("error").textContent = "";
+  const im = new Image();
+  im.onload = () => { img = im; $("empty").style.display = "none"; fit(); render(); update(); if (ready) analyse(); };
+  im.src = URL.createObjectURL(f);
+  update();
+}
+
+// ---------- analysis ----------
+$("go").onclick = analyse;
+async function analyse() {
+  if (!file) return;
+  $("busy").style.display = "flex"; $("go").disabled = true; $("error").textContent = "";
+  try {
+    const r = await fetch("/count", {method:"POST", body:file});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    data = j; removed = new Set(); added = []; history = [];
+    $("useplate").checked = j.use_plate && !!j.plate;
+    render(); update();
+  } catch (e) { $("error").textContent = "Error: " + e.message; }
+  $("busy").style.display = "none"; $("go").disabled = !ready;
+}
+$("sens").oninput = () => {
+  const v = +$("sens").value;
+  $("sensv").textContent = v === 0 ? "default" : (v > 0 ? "+" : "") + v;
+  render(); update();
+};
+$("useplate").onchange = () => { render(); update(); };
+
+// ---------- colonies currently counted ----------
+function factor() { return Math.pow(2, -$("sens").value / 100); }  // score must reach threshold x factor
+function insidePlate(x, y) {
+  if (!$("useplate").checked || !data.plate) return true;
+  const [px, py, pr] = data.plate;
+  return Math.hypot(x - px, y - py) <= pr * 1.02;
+}
+function colonies() {
+  const f = factor(), out = [];
+  data.colonies.forEach((c, i) => {
+    const b = c.box, x = (b[0] + b[2]) / 2, y = (b[1] + b[3]) / 2;
+    if (removed.has(i) || c.score < c.threshold * f || !insidePlate(x, y)) return;
+    out.push({i, kind:c.source, score:c.score, box:b, x, y, r:Math.max(b[2] - b[0], b[3] - b[1]) / 2 * 1.1});
+  });
+  return out.concat(added.map((a, k) => ({added:k, kind:"manual", score:1, x:a.x, y:a.y, r:a.r,
+                                          box:[a.x - a.r, a.y - a.r, a.x + a.r, a.y + a.r]})));
+}
+function typicalRadius() {
+  const r = colonies().filter(c => c.added === undefined).map(c => c.r).sort((a, b) => a - b);
+  return r.length ? r[Math.floor(r.length / 2)] : Math.max(img.width, img.height) / 120;
+}
+
+// ---------- drawing ----------
+function fit() {
+  const w = cv.clientWidth, h = cv.clientHeight;
+  view.s = Math.min(w / img.width, h / img.height) * 0.98;
+  view.x = (w - img.width * view.s) / 2; view.y = (h - img.height * view.s) / 2;
+}
+function circle(c, x, y, r, colour, dashed, lw, u) {
+  c.beginPath(); c.arc(x, y, Math.max(r, 3), 0, Math.PI * 2);
+  c.strokeStyle = colour; c.lineWidth = lw; c.setLineDash(dashed ? [5 * u, 3 * u] : []); c.stroke();
+}
+function draw(c, s, x0, y0, numbers) {
+  c.drawImage(img, x0, y0, img.width * s, img.height * s);
+  if (!data) return;
+  const u = c === ctx ? 1 : Math.max(1, Math.max(img.width, img.height) / 1000);  // full-size export: thicker
+  if (data.plate && $("useplate").checked) {
+    const [px, py, pr] = data.plate;
+    c.save(); c.beginPath(); c.rect(x0, y0, img.width * s, img.height * s);
+    c.arc(x0 + px * s, y0 + py * s, pr * s, 0, Math.PI * 2, true); c.fillStyle = "rgba(15,23,42,.55)"; c.fill("evenodd");
+    c.beginPath(); c.arc(x0 + px * s, y0 + py * s, pr * s, 0, Math.PI * 2); c.strokeStyle = "#3b82f6"; c.lineWidth = 3 * u; c.stroke();
+    c.restore();
+  }
+  const list = colonies();
+  list.forEach((k, n) => {
+    circle(c, x0 + k.x * s, y0 + k.y * s, k.r * s, COLOURS[k.kind], k.kind === "manual", 2 * u, u);
+    if (numbers && list.length <= 400) {
+      const fs = Math.max(10 * u, Math.min(16 * u, k.r * s * 0.9));
+      c.font = `600 ${fs}px Segoe UI`; c.lineWidth = 3 * u; c.strokeStyle = "white"; c.setLineDash([]);
+      const tx = x0 + (k.x + k.r * 0.75) * s, ty = y0 + (k.y - k.r * 0.75) * s;
+      c.strokeText(n + 1, tx, ty); c.fillStyle = "#0f172a"; c.fillText(n + 1, tx, ty);
+    }
+  });
+  if (c === ctx && pointer && pointer.draw)
+    circle(c, x0 + pointer.ix * s, y0 + pointer.iy * s, pointer.r * s, COLOURS.manual, true, 2, 1);
+}
+function render() {
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = cv.clientWidth * dpr; cv.height = cv.clientHeight * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cv.width, cv.height);
+  if (img) draw(ctx, view.s, view.x, view.y, $("nums").checked);
+}
+window.onresize = () => { if (img) { fit(); render(); } };
+$("nums").onchange = render;
+$("fit").onclick = () => { fit(); render(); };
+$("drawbtn").onclick = () => { drawTool = !drawTool; $("drawbtn").classList.toggle("on", drawTool); };
+
+// ---------- zoom, pan, click and drag to correct ----------
+function toImage(e) {
+  const r = cv.getBoundingClientRect();
+  return [(e.clientX - r.left - view.x) / view.s, (e.clientY - r.top - view.y) / view.s];
+}
+cv.addEventListener("wheel", e => {
+  if (!img) return; e.preventDefault();
+  const f = e.deltaY < 0 ? 1.2 : 1 / 1.2, r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  view.x = mx - (mx - view.x) * f; view.y = my - (my - view.y) * f; view.s *= f; render();
+}, {passive:false});
+cv.onpointerdown = e => {
+  if (!img) return;
+  try { cv.setPointerCapture(e.pointerId); } catch (err) { /* pointer already released */ }
+  const [ix, iy] = toImage(e);
+  pointer = {x:e.clientX, y:e.clientY, vx:view.x, vy:view.y, ix, iy, r:0, moved:false, draw:!!data && (drawTool || e.shiftKey)};
+};
+cv.onpointermove = e => {
+  if (!pointer) return;
+  if (Math.abs(e.clientX - pointer.x) + Math.abs(e.clientY - pointer.y) > 4) pointer.moved = true;
+  if (!pointer.moved) return;
+  if (pointer.draw) { const [x, y] = toImage(e); pointer.r = Math.hypot(x - pointer.ix, y - pointer.iy); }
+  else { view.x = pointer.vx + e.clientX - pointer.x; view.y = pointer.vy + e.clientY - pointer.y; }
+  render();
+};
+cv.onpointerup = e => {
+  const p = pointer; pointer = null;
+  if (!p || !data) return render();
+  const inside = p.ix >= 0 && p.iy >= 0 && p.ix < img.width && p.iy < img.height;
+  if (p.draw && p.moved && p.r * view.s >= 4) { remember(); added.push({x:p.ix, y:p.iy, r:p.r}); }
+  else if (!p.moved && inside) toggleAt(p.ix, p.iy);
+  render(); update();
+};
+function remember() { history.push({removed:new Set(removed), added:added.slice()}); }
+function toggleAt(x, y) {
+  const hit = colonies().filter(c => Math.hypot(c.x - x, c.y - y) <= Math.max(c.r, 6 / view.s)).sort((a, b) => a.r - b.r)[0];
+  remember();
+  if (!hit) added.push({x, y, r:typicalRadius()});
+  else if (hit.added !== undefined) added.splice(hit.added, 1);
+  else removed.add(hit.i);
+}
+$("undo").onclick = () => { const h = history.pop(); if (h) { removed = h.removed; added = h.added; render(); update(); } };
+$("reset").onclick = () => { remember(); removed = new Set(); added = []; render(); update(); };
+
+// ---------- numbers ----------
+["diam","dil","vol"].forEach(id => $(id).oninput = update);
+function summary() {
+  const list = colonies(), total = list.length, per = {};
+  list.forEach(c => per[c.kind] = (per[c.kind] || 0) + 1);
+  const diam = +$("diam").value, k = +$("dil").value, vol = +$("vol").value;
+  const cm2 = total / (Math.PI * (diam / 20) ** 2), ml = vol > 0 ? total * 10 ** k / vol : 0;
+  const status = total < 30 ? "too few" : total > 300 ? "too many (TNTC)" : "ok";
+  return {list, total, per, diam, k, vol, cm2, ml, status};
+}
+function update() {
+  const has = !!data;
+  $("undo").disabled = !history.length;
+  $("reset").disabled = !(removed.size || added.length);
+  $("fit").disabled = !img;
+  ["csv","png","json","drawbtn"].forEach(id => $(id).disabled = !has);
+  $("go").disabled = !(ready && file);
+  if (!has) { $("total").textContent = "—"; $("kinds").innerHTML = ""; $("kv").innerHTML = "";
+              $("status").textContent = img ? "Counting…" : "Drop a photo to count its colonies.";
+              $("status").style.color = ""; return; }
+  const s = summary();
+  $("total").textContent = s.total + (s.total === 1 ? " colony" : " colonies");
+  $("status").textContent = s.status === "ok" ? "✓ Within the countable range (30–300)"
+                          : s.status === "too few" ? "Fewer than 30: fine for a presence check, statistically weak for CFU"
+                          : "⚠ More than 300: too many to count reliably (TNTC)";
+  $("status").style.color = s.status === "ok" ? "var(--ok)" : s.status === "too few" ? "var(--ink2)" : "var(--warn)";
+  $("kinds").innerHTML = ["tile","global","manual"].filter(k => s.per[k]).map(k =>
+    `<tr><td><span class="dot" style="background:${COLOURS[k]}"></span>${KIND_NAMES[k]}</td><td>${s.per[k]}</td></tr>`).join("");
+  $("kv").innerHTML = `<hr style="border:none;border-top:1px solid var(--line)">
+    Density: <b>${s.cm2.toFixed(2)}</b> CFU/cm²<br>
+    In the original sample: <b>${Math.round(s.ml).toLocaleString()}</b> CFU/ml<br>
+    Plate rim: ${data.plate ? "found ✓" : "not found"}<br>
+    AI time: ${data.seconds} s<br>
+    My edits: ${added.length} added, ${removed.size} removed`;
+}
+
+// ---------- export ----------
+const stem = () => fileName.replace(/\.[^.]+$/, "");
+$("csv").onclick = () => {
+  const s = summary();
+  const head = ["file","sensitivity","total_colonies","colonies","large_colonies","added_by_hand","removed_by_hand",
+                "plate_found","plate_diameter_mm","cfu_per_cm2","dilution","volume_ml","cfu_per_ml","status"];
+  const row = [fileName, +$("sens").value, s.total, s.per.tile || 0, s.per.global || 0, added.length, removed.size,
+               data.plate ? "yes" : "no", s.diam, s.cm2.toFixed(2), `1e-${s.k}`, s.vol, Math.round(s.ml), s.status];
+  save(new Blob(["\ufeff" + head.join(";") + "\n" + row.join(";") + "\n"], {type:"text/csv"}), stem() + "_count.csv");
+};
+$("png").onclick = () => {
+  const c = document.createElement("canvas"); c.width = img.width; c.height = img.height;
+  draw(c.getContext("2d"), 1, 0, 0, $("nums").checked);
+  c.toBlob(b => save(b, stem() + "_counted.png"));
+};
+$("json").onclick = () => {
+  const r = v => Math.round(v * 10) / 10;
+  const labels = summary().list.map((c, n) => {
+    const [x0, y0, x1, y1] = c.box.map((v, k) => Math.min(Math.max(v, 0), k % 2 ? img.height : img.width));
+    return {id:n + 1, x:r(x0), y:r(y0), width:r(x1 - x0), height:r(y1 - y0)};
+  });
+  const out = {sample_id:stem(), colonies_number:labels.length, labels};
+  save(new Blob([JSON.stringify(out)], {type:"application/json"}), stem() + ".json");
+};
+function save(blob, name) { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; a.click(); }
+update();
+</script>
+</body>
+</html>

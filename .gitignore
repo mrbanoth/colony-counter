@@ -1,0 +1,26 @@
+# Plate photos and labels are private: never commit them
+data/
+*.zip
+*.jpg
+*.jpeg
+*.png
+!reports/*.png
+
+# Model files are published as GitHub Release assets
+weights/
+*.pt
+*.onnx
+
+# Training outputs and logs
+runs/
+*.log
+reports/worst/
+
+# Python / tooling
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+.catalyst/
+.build/

@@ -1,0 +1,30 @@
+{
+  "defaults": {
+    "project": 1,
+    "env": 1
+  },
+  "actives": {
+    "project": 1,
+    "env": 1
+  },
+  "projects": [
+    {
+      "idx": 1,
+      "id": "71739000000029004",
+      "name": "ML-project",
+      "domain": {
+        "id": "50046578568",
+        "name": "ml-project-60090398389.development"
+      },
+      "timezone": "Asia/Kolkata",
+      "env": [
+        {
+          "idx": 1,
+          "id": "60090398389",
+          "name": "Development",
+          "type": 3
+        }
+      ]
+    }
+  ]
+}

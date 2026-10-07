@@ -1,0 +1,8 @@
+ultralytics>=8.4.0
+onnx>=1.16
+onnxslim>=0.1.50
+onnxruntime>=1.18
+opencv-python-headless>=4.9
+numpy>=1.26
+pillow>=10.0
+matplotlib>=3.8

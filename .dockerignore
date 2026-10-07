@@ -1,0 +1,6 @@
+*
+!app/
+!weights/colony.onnx
+!weights/colony.json
+app/__pycache__/
+app/samples/
