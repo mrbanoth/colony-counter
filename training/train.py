@@ -1,16 +1,17 @@
-"""Train the colony detector (YOLO26, one class) on the views written by prepare_dataset.py.
+"""Train the colony detector (YOLO26, one class) on the views written by prepare_dataset.py, on one machine.
+
+(On Zoho Catalyst, training/cloud_trainer.py runs the same training in checkpointed rounds instead.)
 
 Presets:
-  colab  YOLO26n at 1024 px, 30 epochs: the production model, sized for a free Google Colab T4 (~5 h) and for
-         answering within Zoho Catalyst's 30 s limit on CPU (see training/colab_train.ipynb)
+  gpu-n  YOLO26n at 1024 px, 30 epochs: small enough to answer within Zoho Catalyst's 30 s limit on CPU
   gpu    YOLO26s at 1024 px, 80 epochs: more accurate, but slower on CPU at inference time
   gpu-m  YOLO26m at 1024 px: more accurate again, too slow for CPU hosting
   cpu    YOLO26n at 640 px, short schedule on a subset of the views: a working model without any GPU
 
 Usage:
-  python training/train.py --preset colab
+  python training/train.py --preset gpu-n
   python training/train.py --preset cpu --name cpu_v0
-  python training/train.py --resume runs/colony/colab/weights/last.pt
+  python training/train.py --resume runs/colony/gpu-n/weights/last.pt
 Then export: python training/export.py runs/colony/<name>/weights/best.pt
 """
 import argparse
@@ -20,7 +21,7 @@ from pathlib import Path
 import yaml
 
 PRESETS = {
-    "colab": dict(model="yolo26n.pt", imgsz=1024, epochs=30, batch=16, workers=2, fraction=1.0, patience=12),
+    "gpu-n": dict(model="yolo26n.pt", imgsz=1024, epochs=30, batch=16, workers=2, fraction=1.0, patience=12),
     "gpu": dict(model="yolo26s.pt", imgsz=1024, epochs=80, batch=16, workers=4, fraction=1.0, patience=25),
     "gpu-m": dict(model="yolo26m.pt", imgsz=1024, epochs=80, batch=8, workers=4, fraction=1.0, patience=25),
     "cpu": dict(model="yolo26n.pt", imgsz=640, epochs=12, batch=8, workers=2, fraction=0.35, patience=0),
@@ -34,7 +35,7 @@ AUGMENT = dict(fliplr=0.5, flipud=0.5, degrees=0.0, scale=0.5, translate=0.1, mo
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--preset", choices=PRESETS, default="colab")
+    ap.add_argument("--preset", choices=PRESETS, default="gpu-n")
     ap.add_argument("--data", default="data/yolo/data.yaml")
     ap.add_argument("--name", help="run name (default: preset name)")
     ap.add_argument("--project", default="runs/colony")

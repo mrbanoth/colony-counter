@@ -25,8 +25,8 @@ that contain large colonies repeated so the model sees enough of them.
 
 ## Results
 
-The training notebook evaluates the model on held-out test plates (never used for training or tuning) and
-writes `reports/metrics.json` with charts:
+The trainer evaluates the model on held-out test plates (never used for training or tuning) and writes
+`reports/metrics.json` with charts:
 
 - detection precision, recall, F1, mAP50 and mAP50-95, plus a confusion matrix of found, missed and false colonies;
 - recall per colony size, from tiny (< 32 px) to huge (> 1000 px), which shows whether big colonies are missed;
@@ -43,21 +43,23 @@ app/            inference and web app (CPU, ONNX Runtime; no PyTorch needed)
   web/          single-page interface
 training/
   prepare_dataset.py  labelled zips -> train/val/test splits, whole-plate and tile views
-  train.py            YOLO26 training (Colab/GPU and CPU presets)
-  colab_train.ipynb   the whole training pipeline on a free Google Colab GPU
+  pack_dataset.py     prepared views -> one compact zip for the cloud trainer
+  cloud_trainer.py    the whole training pipeline as a Zoho Catalyst AppSail service
+  train.py            YOLO26 training on one machine (GPU and CPU presets)
   export.py           trained weights -> ONNX
   tune.py             fusion thresholds tuned on the validation plates
   evaluate.py         metrics, confusion matrix and plots on the test plates
-catalyst/       Zoho Catalyst project link (AppSail deployment)
-Dockerfile      inference image (linux/amd64)
+catalyst/       Zoho Catalyst project link and build script for the two AppSail services
+Dockerfile      inference image, for container hosts (linux/amd64)
 ```
 
-Plate photos, labels and model files are not in the repository. The trained model is attached to the
-[latest release](https://github.com/mrbanoth/colony-counter/releases/latest).
+Plate photos, labels and model files are not in the repository. The trainer publishes the model to the
+Stratus bucket (`model/colony.onnx`, `model/colony.json`); the running trainer also serves them at
+`/model/colony.onnx` and `/model/colony.json`.
 
 ## Run it
 
-Download `colony.onnx` and `colony.json` from the latest release into `weights/`, then either:
+Put `colony.onnx` and `colony.json` into `weights/`, then either:
 
 ```bash
 pip install -r app/requirements.txt
@@ -84,33 +86,58 @@ The labelled data is a set of zips, each holding per plate a photo (`<id>.jpg`) 
 `x`, `y` are the top-left corner of a colony's box, in pixels. The web app's "Export corrected labels" writes
 this same format, so corrected photos can be added as one more folder of training data.
 
-Training runs in Google Colab, so nothing heavy runs on your own computer:
+### In Zoho Catalyst (no GPU, nothing heavy on your computer)
 
-1. Upload the zips to a Google Drive folder named `colony-data` (in *My Drive*).
-2. Open [training/colab_train.ipynb in Colab](https://colab.research.google.com/github/mrbanoth/colony-counter/blob/main/training/colab_train.ipynb),
-   choose *Runtime > Change runtime type > T4 GPU*, then *Runtime > Run all*.
-3. About 5 hours later the model and its evaluation report are in *My Drive/colony-counter/model*.
-   Checkpoints are saved to Drive after every epoch; after a disconnect, *Run all* resumes.
+Training runs in the Catalyst cloud as an AppSail service (`training/cloud_trainer.py`, CPU only), with the
+data and every checkpoint in a Stratus bucket:
 
-The same steps on any machine with a GPU:
+1. Prepare and pack the data (a few minutes, no training):
+   ```bash
+   pip install -r training/requirements.txt
+   python training/prepare_dataset.py data1.zip data2.zip corrected_photos/   # zips or folders
+   python training/pack_dataset.py                                            # -> data/colony-train.zip
+   ```
+2. In the Catalyst console (*Cloud Scale > Stratus*) create a bucket named `colony-counter-ml` and upload
+   `data/colony-train.zip` into a folder `dataset/`.
+3. Deploy the trainer (a few KB of code; it installs PyTorch on the instance):
+   ```bash
+   python catalyst/stage.py trainer
+   cd catalyst
+   catalyst deploy appsail --name colonytrainer --build-path <repo>/.build/trainer --stack python_3_11 --command "python3 training/cloud_trainer.py"
+   ```
+4. In the console, open the AppSail service *colonytrainer > Configuration > App Execution Settings* and set
+   the memory to 2048 MB and the disk to the largest size offered (PyTorch alone needs about 1.5 GB). If
+   the bucket has another name, add the environment variable `BUCKET`.
+5. Open the service URL once; the page shows the progress. The trainer then keeps itself going: rounds of
+   400 views, a checkpoint to Stratus after each, and after every pass over the data a new ONNX model with
+   tuned counting settings in `model/` of the bucket. After the last pass it writes the test report to
+   `reports/`. A restarted instance resumes from the last checkpoint.
+
+CPU training is slow: count on roughly a day per pass over the data.
+
+### On a machine with a GPU
 
 ```bash
 pip install -r training/requirements.txt
-python training/prepare_dataset.py data1.zip data2.zip corrected_photos/   # zips or folders
-python training/train.py --preset colab
-python training/export.py runs/colony/colab/weights/best.pt
+python training/prepare_dataset.py data1.zip data2.zip corrected_photos/
+python training/train.py --preset gpu-n
+python training/export.py runs/colony/gpu-n/weights/best.pt
 python training/tune.py
 python training/evaluate.py
 ```
 
 ## Deploy on Zoho Catalyst AppSail
 
+The web app runs as a Catalyst-managed Python service; its Linux packages are bundled at build time:
+
 ```bash
-docker build --platform linux/amd64 -t colony-counter:latest .
-docker save colony-counter:latest -o catalyst/colony-counter.tar
+python catalyst/stage.py counter --arch x86_64 --python 3.11 --bucket colony-counter-ml
 cd catalyst
-catalyst deploy appsail --name colonycounter --source docker-archive://colony-counter.tar --port 9000
+catalyst deploy appsail --name colonycounter --build-path <repo>/.build/counter --stack python_3_11 --command "python3 main.py"
 ```
 
-The app opens its port within a second and loads the model in the background, answers each photo in well
-under AppSail's 30 s limit and uses about 350 MB of memory (set the AppSail memory to 1024 MB or more).
+The app opens its port within a second and loads the model in the background, answers each photo in about
+6 s (AppSail stops requests at 30 s) and peaks at about 150 MB of memory. Every ten minutes it checks the
+bucket and switches to a newer model published by the trainer, without a redeploy.
+
+The `Dockerfile` builds the same app as a container image for other hosts.

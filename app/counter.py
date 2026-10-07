@@ -52,11 +52,12 @@ class Counter:
         self.meta = meta
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = threads or int(os.environ.get("COLONY_THREADS", 0)) or cpu_limit()
+        opts.enable_cpu_mem_arena = False  # the arena keeps the peak reserved: 415 MB instead of 150 MB per photo
         providers = [p for p in ("CUDAExecutionProvider", "CPUExecutionProvider") if p in ort.get_available_providers()]
         self.session = ort.InferenceSession(str(model_dir / "colony.onnx"), opts, providers=providers)
         self.input = self.session.get_inputs()[0].name
 
-    def _predict(self, images, batch=4):
+    def _predict(self, images, batch=1):
         """Boxes (in each image's own pixels) and scores for a list of BGR images."""
         out = []
         for i in range(0, len(images), batch):

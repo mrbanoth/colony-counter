@@ -22,8 +22,15 @@ MAX_UPLOAD = 40 * 1024 * 1024
 QUEUE_TIMEOUT = 15  # seconds a request may wait for the CPU before being told to retry (AppSail stops at 30 s)
 CANDIDATE_SHARE = 0.5  # candidates are returned down to half the tuned thresholds, for the slider
 
-state = {"counter": None, "error": None, "since": time.time()}
+# On Catalyst, newer models published by training/cloud_trainer.py are fetched from this Stratus bucket.
+# Stratus is reached with the Catalyst credentials that AppSail adds to each incoming request.
+MODEL_BUCKET = os.environ.get("MODEL_BUCKET")
+REFRESH_EVERY = 600
+FETCHED_DIR = Path(os.environ.get("FETCHED_MODEL_DIR", "/tmp/colony-model"))
+
+state = {"counter": None, "error": None, "since": time.time(), "checked": 0.0}
 busy = threading.Semaphore(1)  # one photo at a time: inference already uses every core
+refresh_lock = threading.Lock()
 
 
 def load():
@@ -33,6 +40,36 @@ def load():
     except Exception as e:
         state["error"] = f"{type(e).__name__}: {e}"
         traceback.print_exc()
+
+
+def maybe_refresh(headers):
+    """Swap in the newest published model, at most every REFRESH_EVERY seconds (in the background)."""
+    if not MODEL_BUCKET or state["counter"] is None or time.time() - state["checked"] < REFRESH_EVERY:
+        return
+    if not refresh_lock.acquire(blocking=False):
+        return
+    state["checked"] = time.time()
+
+    def work():
+        try:
+            import zcatalyst_sdk
+            from types import SimpleNamespace
+            bucket = zcatalyst_sdk.initialize(scope="admin", req=SimpleNamespace(headers=headers)) \
+                .stratus().bucket(MODEL_BUCKET)
+            meta = json.loads(bucket.get_object("model/colony.json"))
+            if meta.get("version") == state["counter"].meta.get("version"):
+                return
+            FETCHED_DIR.mkdir(parents=True, exist_ok=True)
+            (FETCHED_DIR / "colony.onnx").write_bytes(bucket.get_object("model/colony.onnx"))
+            (FETCHED_DIR / "colony.json").write_text(json.dumps(meta))
+            state["counter"] = C.Counter(FETCHED_DIR)
+            print(f"Switched to model {meta.get('version')}", flush=True)
+        except Exception as e:
+            print(f"Model refresh skipped: {type(e).__name__}: {e}", flush=True)
+        finally:
+            refresh_lock.release()
+
+    threading.Thread(target=work, daemon=True).start()
 
 
 def count(data):
@@ -73,17 +110,35 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             self._send((ROOT / "web" / "index.html").read_bytes(), "text/html; charset=utf-8")
         elif path == "/health":
-            self._send({"ready": state["counter"] is not None, "error": state["error"]})
+            maybe_refresh(dict(self.headers))
+            counter = state["counter"]
+            self._send({"ready": counter is not None, "error": state["error"],
+                        "model": counter.meta.get("version") if counter else None})
         else:
             self._send({"error": "not found"}, status=404)
+
+    def _body(self):
+        """The request body, or None if empty or over MAX_UPLOAD (proxies such as AppSail's send it chunked)."""
+        if "chunked" not in self.headers.get("Transfer-Encoding", "").lower():
+            length = int(self.headers.get("Content-Length") or 0)
+            return self.rfile.read(length) if 0 < length <= MAX_UPLOAD else None
+        parts, total = [], 0
+        while size := int(self.rfile.readline().split(b";")[0].strip() or b"0", 16):
+            total += size
+            if total > MAX_UPLOAD:
+                return None
+            parts.append(self.rfile.read(size))
+            self.rfile.readline()
+        while self.rfile.readline().strip():  # trailers
+            pass
+        return b"".join(parts) or None
 
     def do_POST(self):
         if urlparse(self.path).path != "/count":
             return self._send({"error": "not found"}, status=404)
-        length = int(self.headers.get("Content-Length") or 0)
-        if not 0 < length <= MAX_UPLOAD:
+        data = self._body()
+        if not data:
             return self._send({"error": "send one photo of at most 40 MB"}, status=413)
-        data = self.rfile.read(length)
         if state["counter"] is None:
             msg = state["error"] or "the model is still loading, try again in a few seconds"
             return self._send({"error": msg}, status=503)
