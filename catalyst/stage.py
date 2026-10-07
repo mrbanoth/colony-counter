@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FILES = {
     "trainer": ["app/counter.py", "app/geometry.py", "training/cloud_trainer.py", "training/tune.py",
-                "training/evaluate.py", "training/train.py"],
+                "training/evaluate.py", "training/train.py", "training/fuzzy.py"],
     "counter": ["app/server.py", "app/counter.py", "app/geometry.py", "app/web/index.html",
                 "weights/colony.onnx", "weights/colony.json"],
 }

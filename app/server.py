@@ -87,6 +87,7 @@ def count(data):
     h, w = img.shape[:2]
     return {"width": w, "height": h, "seconds": round(time.perf_counter() - t0, 1),
             "plate": [round(v, 1) for v in plate] if plate else None, "use_plate": bool(tuned["plate"]),
+            "rim": tuned["rim"],
             "colonies": colonies, "model": counter.meta.get("model"), "tuned_on": counter.meta.get("tuned_on")}
 
 

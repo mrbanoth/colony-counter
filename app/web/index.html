@@ -84,7 +84,8 @@
   <div class="row"><span>Sensitivity</span><b id="sensv">default</b></div>
   <input type="range" id="sens" min="-100" max="100" value="0">
   <div class="help">Left = only colonies the AI is sure about. Right = also doubtful ones.</div>
-  <div class="row"><label><input type="checkbox" id="useplate"> Only count inside the plate rim</label></div>
+  <div class="row"><label><input type="checkbox" id="useplate"> Only count inside the dish rim</label></div>
+  <div class="help">The blue circle is the dish rim. If it is off, use <b>Adjust rim</b> below the photo.</div>
 
   <h3>3 · Sample (optional)</h3>
   <div class="row"><span>Plate diameter</span><select id="diam">
@@ -97,18 +98,19 @@
 <main>
   <div id="stage">
     <canvas id="cv"></canvas>
-    <div id="empty"><div>① Drop a photo of a plate on the left<br>② Check the circles<br>
+    <div id="empty"><div>① Drop a photo of a plate on the left<br>② Check the circles and the blue dish rim<br>
       ③ Fix mistakes: click a circle to remove it, click empty agar to add a colony,<br>
-      or choose <b>Draw big colony</b> and drag over a large one</div></div>
+      or choose <b>Draw colony</b> and trace around a missed one, whatever its shape</div></div>
     <div id="busy"><div class="spin"></div><div id="busytext">Counting colonies…</div></div>
   </div>
   <div class="toolbar">
-    <button id="drawbtn" disabled title="Drag from the centre of a colony to its edge (or hold Shift while dragging)">◯ Draw big colony</button>
+    <button id="drawbtn" disabled title="Trace around a colony with the mouse or a finger, any shape (or hold Shift while dragging)">✎ Draw colony</button>
+    <button id="rimbtn" disabled title="Drag inside the blue circle to move it, drag its edge to resize it">◎ Adjust rim</button>
     <button id="undo" disabled>↶ Undo</button>
     <button id="reset" disabled>Reset my edits</button>
     <button id="fit" disabled>Fit</button>
     <label><input type="checkbox" id="nums" checked> Numbers</label>
-    <span class="grow">Wheel: zoom · Drag: move · Click circle: remove · Click agar: add</span>
+    <span class="grow">Wheel: zoom · Drag: move · Click colony: remove · Click agar: add · Shift+drag: trace</span>
   </div>
 </main>
 
@@ -132,7 +134,8 @@ const KIND_NAMES = {tile:"Colonies", global:"Large colonies", manual:"Added by h
 const $ = id => document.getElementById(id);
 const cv = $("cv"), ctx = cv.getContext("2d");
 let file = null, fileName = "", img = null, data = null, removed = new Set(), added = [], history = [];
-let view = {s:1, x:0, y:0}, pointer = null, drawTool = false, ready = false;
+let view = {s:1, x:0, y:0}, pointer = null, tool = null, ready = false, rimEdit = null;
+const rim = () => rimEdit || (data && data.plate);  // [cx, cy, r] in image pixels
 
 for (let k = 0; k <= 8; k++) $("dil").add(new Option(k ? `10^-${k}` : "none (1)", k));
 
@@ -158,7 +161,7 @@ document.body.addEventListener("dragover", e => e.preventDefault());
 document.body.addEventListener("drop", e => { e.preventDefault(); e.dataTransfer.files[0] && setFile(e.dataTransfer.files[0]); });
 
 function setFile(f) {
-  file = f; fileName = f.name || "photo.jpg"; data = null; removed = new Set(); added = []; history = [];
+  file = f; fileName = f.name || "photo.jpg"; data = null; removed = new Set(); added = []; history = []; rimEdit = null;
   $("fname").textContent = "📄 " + fileName; $("error").textContent = "";
   const im = new Image();
   im.onload = () => { img = im; $("empty").style.display = "none"; fit(); render(); update(); if (ready) analyse(); };
@@ -175,7 +178,7 @@ async function analyse() {
     const r = await fetch("/count", {method:"POST", body:file});
     const j = await r.json();
     if (!r.ok) throw new Error(j.error);
-    data = j; removed = new Set(); added = []; history = [];
+    data = j; removed = new Set(); added = []; history = []; rimEdit = null;
     $("useplate").checked = j.use_plate && !!j.plate;
     render(); update();
   } catch (e) { $("error").textContent = "Error: " + e.message; }
@@ -191,9 +194,16 @@ $("useplate").onchange = () => { render(); update(); };
 // ---------- colonies currently counted ----------
 function factor() { return Math.pow(2, -$("sens").value / 100); }  // score must reach threshold x factor
 function insidePlate(x, y) {
-  if (!$("useplate").checked || !data.plate) return true;
-  const [px, py, pr] = data.plate;
-  return Math.hypot(x - px, y - py) <= pr * 1.02;
+  const p = rim();
+  if (!$("useplate").checked || !p) return true;
+  return Math.hypot(x - p[0], y - p[1]) <= p[2] * (data.rim || 1.03);
+}
+function manual(a, k) {  // a hand-added colony: a circle {x, y, r} or a traced outline {poly: [[x, y], ...]}
+  if (!a.poly) return {added:k, kind:"manual", score:1, x:a.x, y:a.y, r:a.r, box:[a.x - a.r, a.y - a.r, a.x + a.r, a.y + a.r]};
+  const xs = a.poly.map(p => p[0]), ys = a.poly.map(p => p[1]);
+  const box = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  return {added:k, kind:"manual", score:1, poly:a.poly, box, x:(box[0] + box[2]) / 2, y:(box[1] + box[3]) / 2,
+          r:Math.max(box[2] - box[0], box[3] - box[1]) / 2};
 }
 function colonies() {
   const f = factor(), out = [];
@@ -202,8 +212,15 @@ function colonies() {
     if (removed.has(i) || c.score < c.threshold * f || !insidePlate(x, y)) return;
     out.push({i, kind:c.source, score:c.score, box:b, x, y, r:Math.max(b[2] - b[0], b[3] - b[1]) / 2 * 1.1});
   });
-  return out.concat(added.map((a, k) => ({added:k, kind:"manual", score:1, x:a.x, y:a.y, r:a.r,
-                                          box:[a.x - a.r, a.y - a.r, a.x + a.r, a.y + a.r]})));
+  return out.concat(added.map(manual));
+}
+function insidePoly(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
 }
 function typicalRadius() {
   const r = colonies().filter(c => c.added === undefined).map(c => c.r).sort((a, b) => a - b);
@@ -224,16 +241,22 @@ function draw(c, s, x0, y0, numbers) {
   c.drawImage(img, x0, y0, img.width * s, img.height * s);
   if (!data) return;
   const u = c === ctx ? 1 : Math.max(1, Math.max(img.width, img.height) / 1000);  // full-size export: thicker
-  if (data.plate && $("useplate").checked) {
-    const [px, py, pr] = data.plate;
+  const p = rim();
+  if (p && ($("useplate").checked || tool === "rim")) {
+    const [px, py, pr] = p;
     c.save(); c.beginPath(); c.rect(x0, y0, img.width * s, img.height * s);
     c.arc(x0 + px * s, y0 + py * s, pr * s, 0, Math.PI * 2, true); c.fillStyle = "rgba(15,23,42,.55)"; c.fill("evenodd");
-    c.beginPath(); c.arc(x0 + px * s, y0 + py * s, pr * s, 0, Math.PI * 2); c.strokeStyle = "#3b82f6"; c.lineWidth = 3 * u; c.stroke();
+    c.beginPath(); c.arc(x0 + px * s, y0 + py * s, pr * s, 0, Math.PI * 2); c.strokeStyle = "#3b82f6";
+    c.lineWidth = (tool === "rim" ? 5 : 3) * u; c.setLineDash(tool === "rim" ? [10 * u, 6 * u] : []); c.stroke();
     c.restore();
   }
   const list = colonies();
   list.forEach((k, n) => {
-    circle(c, x0 + k.x * s, y0 + k.y * s, k.r * s, COLOURS[k.kind], k.kind === "manual", 2 * u, u);
+    if (k.poly) {
+      c.beginPath(); k.poly.forEach(([x, y], j) => (j ? c.lineTo : c.moveTo).call(c, x0 + x * s, y0 + y * s)); c.closePath();
+      c.fillStyle = "rgba(239,68,68,.18)"; c.fill();
+      c.strokeStyle = COLOURS.manual; c.lineWidth = 2 * u; c.setLineDash([5 * u, 3 * u]); c.stroke();
+    } else circle(c, x0 + k.x * s, y0 + k.y * s, k.r * s, COLOURS[k.kind], k.kind === "manual", 2 * u, u);
     if (numbers && list.length <= 400) {
       const fs = Math.max(10 * u, Math.min(16 * u, k.r * s * 0.9));
       c.font = `600 ${fs}px Segoe UI`; c.lineWidth = 3 * u; c.strokeStyle = "white"; c.setLineDash([]);
@@ -241,8 +264,10 @@ function draw(c, s, x0, y0, numbers) {
       c.strokeText(n + 1, tx, ty); c.fillStyle = "#0f172a"; c.fillText(n + 1, tx, ty);
     }
   });
-  if (c === ctx && pointer && pointer.draw)
-    circle(c, x0 + pointer.ix * s, y0 + pointer.iy * s, pointer.r * s, COLOURS.manual, true, 2, 1);
+  if (c === ctx && pointer && pointer.lasso) {
+    c.beginPath(); pointer.lasso.forEach(([x, y], j) => (j ? c.lineTo : c.moveTo).call(c, x0 + x * s, y0 + y * s));
+    c.strokeStyle = COLOURS.manual; c.lineWidth = 2; c.setLineDash([]); c.stroke();
+  }
 }
 function render() {
   const dpr = window.devicePixelRatio || 1;
@@ -253,7 +278,17 @@ function render() {
 window.onresize = () => { if (img) { fit(); render(); } };
 $("nums").onchange = render;
 $("fit").onclick = () => { fit(); render(); };
-$("drawbtn").onclick = () => { drawTool = !drawTool; $("drawbtn").classList.toggle("on", drawTool); };
+function setTool(t) {
+  tool = tool === t ? null : t;
+  $("drawbtn").classList.toggle("on", tool === "lasso"); $("rimbtn").classList.toggle("on", tool === "rim");
+  if (tool === "rim" && !rim()) {  // no rim found: start from a centred circle for the user to place
+    remember(); rimEdit = [img.width / 2, img.height / 2, Math.min(img.width, img.height) * 0.35];
+    $("useplate").checked = true; update();
+  }
+  render();
+}
+$("drawbtn").onclick = () => setTool("lasso");
+$("rimbtn").onclick = () => setTool("rim");
 
 // ---------- zoom, pan, click and drag to correct ----------
 function toImage(e) {
@@ -269,34 +304,58 @@ cv.onpointerdown = e => {
   if (!img) return;
   try { cv.setPointerCapture(e.pointerId); } catch (err) { /* pointer already released */ }
   const [ix, iy] = toImage(e);
-  pointer = {x:e.clientX, y:e.clientY, vx:view.x, vy:view.y, ix, iy, r:0, moved:false, draw:!!data && (drawTool || e.shiftKey)};
+  pointer = {x:e.clientX, y:e.clientY, vx:view.x, vy:view.y, ix, iy, moved:false};
+  if (data && (tool === "lasso" || e.shiftKey)) pointer.lasso = [[ix, iy]];
+  else if (tool === "rim" && rim()) {
+    const [cx, cy, r] = rim(), d = Math.hypot(ix - cx, iy - cy);
+    remember();
+    pointer.rim = {start:[cx, cy, r], resize:Math.abs(d - r) < Math.max(0.08 * r, 14 / view.s)};
+  }
 };
 cv.onpointermove = e => {
   if (!pointer) return;
   if (Math.abs(e.clientX - pointer.x) + Math.abs(e.clientY - pointer.y) > 4) pointer.moved = true;
   if (!pointer.moved) return;
-  if (pointer.draw) { const [x, y] = toImage(e); pointer.r = Math.hypot(x - pointer.ix, y - pointer.iy); }
-  else { view.x = pointer.vx + e.clientX - pointer.x; view.y = pointer.vy + e.clientY - pointer.y; }
+  const [x, y] = toImage(e);
+  if (pointer.lasso) {
+    const [lx, ly] = pointer.lasso[pointer.lasso.length - 1];
+    if (Math.hypot(x - lx, y - ly) * view.s >= 3) pointer.lasso.push([x, y]);
+  } else if (pointer.rim) {
+    const [cx, cy, r] = pointer.rim.start;
+    rimEdit = pointer.rim.resize ? [cx, cy, Math.max(10, Math.hypot(x - cx, y - cy))]
+                                 : [cx + x - pointer.ix, cy + y - pointer.iy, r];
+    update();
+  } else { view.x = pointer.vx + e.clientX - pointer.x; view.y = pointer.vy + e.clientY - pointer.y; }
   render();
 };
 cv.onpointerup = e => {
   const p = pointer; pointer = null;
   if (!p || !data) return render();
   const inside = p.ix >= 0 && p.iy >= 0 && p.ix < img.width && p.iy < img.height;
-  if (p.draw && p.moved && p.r * view.s >= 4) { remember(); added.push({x:p.ix, y:p.iy, r:p.r}); }
+  if (p.lasso && p.moved) {
+    const xs = p.lasso.map(q => q[0]), ys = p.lasso.map(q => q[1]);
+    const size = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) * view.s;
+    if (p.lasso.length >= 3 && size >= 4) {
+      remember(); added.push({poly:p.lasso.map(([x, y]) => [Math.round(x * 10) / 10, Math.round(y * 10) / 10])});
+    }
+  } else if (p.rim) { if (!p.moved) history.pop(); }
   else if (!p.moved && inside) toggleAt(p.ix, p.iy);
   render(); update();
 };
-function remember() { history.push({removed:new Set(removed), added:added.slice()}); }
+function remember() { history.push({removed:new Set(removed), added:added.slice(), rimEdit}); }
 function toggleAt(x, y) {
-  const hit = colonies().filter(c => Math.hypot(c.x - x, c.y - y) <= Math.max(c.r, 6 / view.s)).sort((a, b) => a.r - b.r)[0];
+  const hit = colonies().filter(c => c.poly ? insidePoly(x, y, c.poly) : Math.hypot(c.x - x, c.y - y) <= Math.max(c.r, 6 / view.s))
+                        .sort((a, b) => a.r - b.r)[0];
   remember();
   if (!hit) added.push({x, y, r:typicalRadius()});
   else if (hit.added !== undefined) added.splice(hit.added, 1);
   else removed.add(hit.i);
 }
-$("undo").onclick = () => { const h = history.pop(); if (h) { removed = h.removed; added = h.added; render(); update(); } };
-$("reset").onclick = () => { remember(); removed = new Set(); added = []; render(); update(); };
+$("undo").onclick = () => {
+  const h = history.pop();
+  if (h) { removed = h.removed; added = h.added; rimEdit = h.rimEdit; render(); update(); }
+};
+$("reset").onclick = () => { remember(); removed = new Set(); added = []; rimEdit = null; render(); update(); };
 
 // ---------- numbers ----------
 ["diam","dil","vol"].forEach(id => $(id).oninput = update);
@@ -311,9 +370,9 @@ function summary() {
 function update() {
   const has = !!data;
   $("undo").disabled = !history.length;
-  $("reset").disabled = !(removed.size || added.length);
+  $("reset").disabled = !(removed.size || added.length || rimEdit);
   $("fit").disabled = !img;
-  ["csv","png","json","drawbtn"].forEach(id => $(id).disabled = !has);
+  ["csv","png","json","drawbtn","rimbtn"].forEach(id => $(id).disabled = !has);
   $("go").disabled = !(ready && file);
   if (!has) { $("total").textContent = "—"; $("kinds").innerHTML = ""; $("kv").innerHTML = "";
               $("status").textContent = img ? "Counting…" : "Drop a photo to count its colonies.";
@@ -329,7 +388,7 @@ function update() {
   $("kv").innerHTML = `<hr style="border:none;border-top:1px solid var(--line)">
     Density: <b>${s.cm2.toFixed(2)}</b> CFU/cm²<br>
     In the original sample: <b>${Math.round(s.ml).toLocaleString()}</b> CFU/ml<br>
-    Plate rim: ${data.plate ? "found ✓" : "not found"}<br>
+    Dish rim: ${rimEdit ? "adjusted by hand" : data.plate ? "found ✓" : "not found (use Adjust rim)"}<br>
     AI time: ${data.seconds} s<br>
     My edits: ${added.length} added, ${removed.size} removed`;
 }
@@ -341,7 +400,7 @@ $("csv").onclick = () => {
   const head = ["file","sensitivity","total_colonies","colonies","large_colonies","added_by_hand","removed_by_hand",
                 "plate_found","plate_diameter_mm","cfu_per_cm2","dilution","volume_ml","cfu_per_ml","status"];
   const row = [fileName, +$("sens").value, s.total, s.per.tile || 0, s.per.global || 0, added.length, removed.size,
-               data.plate ? "yes" : "no", s.diam, s.cm2.toFixed(2), `1e-${s.k}`, s.vol, Math.round(s.ml), s.status];
+               rimEdit ? "adjusted" : data.plate ? "yes" : "no", s.diam, s.cm2.toFixed(2), `1e-${s.k}`, s.vol, Math.round(s.ml), s.status];
   save(new Blob(["\ufeff" + head.join(";") + "\n" + row.join(";") + "\n"], {type:"text/csv"}), stem() + "_count.csv");
 };
 $("png").onclick = () => {
@@ -353,9 +412,13 @@ $("json").onclick = () => {
   const r = v => Math.round(v * 10) / 10;
   const labels = summary().list.map((c, n) => {
     const [x0, y0, x1, y1] = c.box.map((v, k) => Math.min(Math.max(v, 0), k % 2 ? img.height : img.width));
-    return {id:n + 1, x:r(x0), y:r(y0), width:r(x1 - x0), height:r(y1 - y0)};
+    const label = {id:n + 1, x:r(x0), y:r(y0), width:r(x1 - x0), height:r(y1 - y0)};
+    if (c.poly) label.polygon = c.poly;  // traced by hand: the exact outline
+    return label;
   });
   const out = {sample_id:stem(), colonies_number:labels.length, labels};
+  const p = rim();
+  if (p) out.dish_rim = {cx:r(p[0]), cy:r(p[1]), r:r(p[2])};
   save(new Blob([JSON.stringify(out)], {type:"application/json"}), stem() + ".json");
 };
 function save(blob, name) { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; a.click(); }

@@ -6,7 +6,7 @@ looks twice:
   global pass  the whole plate resized to the model input: finds big colonies
   tile pass    overlapping tiles cut at full resolution: finds small colonies
 fuse() keeps small boxes from the tiles and big ones from the global pass, merges colonies cut by tile edges,
-removes duplicates, and (optionally) boxes outside the plate. Its thresholds are tuned on held-out plates
+removes duplicates, and drops boxes outside the dish rim. Its thresholds are tuned on held-out plates
 (training/tune.py) and stored in weights/colony.json.
 
 Usable without the web interface:  python app/counter.py photo.jpg [...]
@@ -38,7 +38,8 @@ DEFAULT_SETTINGS = {
     "fill_tiles": True,     # keep a big tile box if the global pass found nothing there
     "fill_global": True,    # keep a small global box if no tile found anything there
     "nested": False,        # drop small boxes inside much larger ones (off: real colonies do sit on big ones)
-    "plate": False,         # drop boxes whose centre is outside the detected plate rim
+    "plate": True,          # drop boxes whose centre is outside the dish rim (rim reflections, the holder, ...)
+    "rim": 1.03,            # ... more than this many rim radii from the dish centre
 }
 
 
@@ -217,7 +218,7 @@ def fuse(raw, s, plate=None):
     if s["plate"] and plate is not None and len(boxes):
         cx, cy, r = plate
         centre = (boxes[:, :2] + boxes[:, 2:]) / 2
-        k = np.hypot(centre[:, 0] - cx, centre[:, 1] - cy) <= r * 1.02
+        k = np.hypot(centre[:, 0] - cx, centre[:, 1] - cy) <= r * s["rim"]
         boxes, scores, source = boxes[k], scores[k], source[k]
     threshold = {"tile": s["conf_tile"], "global": s["conf_global"]}
     return [{"box": [round(float(v), 1) for v in b], "score": round(float(sc), 4), "source": str(src),
@@ -234,30 +235,70 @@ def _overlaps(a, b, share=0.5):
 
 
 def find_plate(img):
-    """Outer rim of the Petri dish as (cx, cy, r) in pixels, or None. img: BGR array."""
+    """Rim of the Petri dish as (cx, cy, r) in pixels, or None. img: BGR array.
+
+    Photos often show the dish on a dark round holder, so the largest circle is not the dish. Each candidate
+    circle is scored by how much brighter it is just inside than just outside (agar against the holder beats the
+    holder against the background) times the share of it lying on an image edge."""
     h, w = img.shape[:2]
     k = 800 / max(h, w)  # Hough on a reduced image: fast and less sensitive to colony texture
     small = cv2.resize(img, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
-    g = cv2.medianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), 5)
+    g = cv2.medianBlur(small.max(axis=2), 5)  # brightness without the holder's blue counting as light
     m = min(g.shape)
-    circles = cv2.HoughCircles(g, cv2.HOUGH_GRADIENT, dp=1.5, minDist=5, param1=80, param2=30,
-                               minRadius=int(m * .30), maxRadius=int(m * .60))
+    circles = cv2.HoughCircles(g, cv2.HOUGH_GRADIENT, dp=1.5, minDist=4, param1=80, param2=22,
+                               minRadius=int(m * .22), maxRadius=int(m * .60))
     if circles is None:
         return None
     gh, gw = g.shape
-    edges = cv2.Canny(g, 40, 120)
-    good = [c for c in circles[0, :40]
-            if math.hypot(c[0] - gw / 2, c[1] - gh / 2) < 0.2 * m  # roughly centred
-            and c[0] - c[2] > -0.05 * gw and c[0] + c[2] < 1.05 * gw  # (almost) entirely in the photo
-            and c[1] - c[2] > -0.05 * gh and c[1] + c[2] < 1.05 * gh
-            and _edge_support(edges, *c) >= MIN_RIM_SUPPORT]  # a real rim is a continuous edge
-    if not good:
+    edges = cv2.Canny(g, 30, 100)
+    best, best_score = None, 0.0
+    def score(cx, cy, r):
+        support = _edge_support(edges, cx, cy, r)
+        if support < MIN_RIM_SUPPORT:
+            return 0.0
+        inside = _ring(g, cx, cy, r * np.linspace(0.86, 0.96, 4))
+        outside = _ring(g, cx, cy, r * np.linspace(1.04, 1.14, 4))
+        return max(inside - outside, 0.0) * support
+
+    for cx, cy, r in circles[0, :80]:
+        # dishes may sit off-centre or run a little out of the photo
+        if (math.hypot(cx - gw / 2, cy - gh / 2) > 0.45 * m
+                or cx - r < -0.15 * gw or cx + r > 1.15 * gw or cy - r < -0.15 * gh or cy + r > 1.15 * gh):
+            continue
+        sc = score(cx, cy, r)
+        if sc > best_score:
+            best, best_score = (cx, cy, r), sc
+    if best is None or best_score < 8:
         return None
-    return tuple(float(v) / k for v in max(good, key=lambda c: c[2]))  # outer rim = largest circle
+    for band in (0.06, 0.03):  # Hough is coarse: fit the circle to the rim's own edge pixels
+        fit = _fit_circle(edges, *best, band)
+        if fit is not None and score(*fit) >= 0.8 * best_score:
+            best = fit
+    return tuple(float(v) / k for v in best)
+
+
+def _fit_circle(edges, cx, cy, r, band):
+    """Least-squares circle through the edge pixels within band*r of the circle (cx, cy, r), or None."""
+    ys, xs = np.nonzero(edges)
+    near = np.abs(np.hypot(xs - cx, ys - cy) - r) < band * r
+    if near.sum() < 60:
+        return None
+    x, y = xs[near].astype(float), ys[near].astype(float)
+    (a, b, c), *_ = np.linalg.lstsq(np.c_[2 * x, 2 * y, np.ones_like(x)], x * x + y * y, rcond=None)
+    return a, b, math.sqrt(max(c + a * a + b * b, 1.0))
+
+
+def _ring(g, cx, cy, radii):
+    """Median brightness on circles of the given radii (points outside the image ignored)."""
+    a = np.linspace(0, 2 * np.pi, 180, endpoint=False)
+    x = np.rint(cx + radii[:, None] * np.cos(a)).astype(int).ravel()
+    y = np.rint(cy + radii[:, None] * np.sin(a)).astype(int).ravel()
+    ok = (x >= 0) & (x < g.shape[1]) & (y >= 0) & (y < g.shape[0])
+    return float(np.median(g[y[ok], x[ok]])) if ok.any() else 0.0
 
 
 def _edge_support(edges, cx, cy, r, band=4):
-    """Share of the circle's perimeter lying within `band` px of an edge pixel."""
+    """Share of the circle's visible perimeter lying within `band` px of an edge pixel (0 if mostly off-photo)."""
     a = np.linspace(0, 2 * np.pi, 360, endpoint=False)
     dr = np.arange(-band, band + 1)
     x = np.rint(cx + (r + dr[:, None]) * np.cos(a)).astype(int)
@@ -265,7 +306,10 @@ def _edge_support(edges, cx, cy, r, band=4):
     ok = (x >= 0) & (x < edges.shape[1]) & (y >= 0) & (y < edges.shape[0])
     hit = np.zeros_like(ok)
     hit[ok] = edges[y[ok], x[ok]] > 0
-    return float(hit.any(axis=0).mean())
+    visible = ok.all(axis=0)
+    if visible.mean() < 0.6:
+        return 0.0
+    return float(hit.any(axis=0)[visible].mean())
 
 
 def cfu_per_cm2(total, plate_diameter_mm):
